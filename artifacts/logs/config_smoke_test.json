@@ -1,0 +1,23 @@
+{
+  "experiment": {
+    "name": "baseline_larger_train",
+    "seed": 42
+  },
+  "retrieval": {
+    "model": {
+      "max_features": 30000,
+      "ngram_min": 1,
+      "ngram_max": 2
+    },
+    "train_dataset": {
+      "max_impressions": 1000,
+      "negatives_per_positive": 4
+    }
+  },
+  "ranking": {
+    "model": {
+      "C": 0.5,
+      "max_iter": 1000
+    }
+  }
+}
