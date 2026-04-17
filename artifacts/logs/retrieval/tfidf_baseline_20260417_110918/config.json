@@ -1,0 +1,31 @@
+{
+  "run_name": "tfidf_baseline_20260417_110918",
+  "train_dataset": {
+    "split": "train",
+    "max_impressions": 500,
+    "negatives_per_positive": 4,
+    "max_history_items": 5,
+    "random_state": 42
+  },
+  "dev_dataset": {
+    "split": "dev",
+    "max_impressions": 120,
+    "negatives_per_positive": 4,
+    "max_history_items": 5,
+    "random_state": 42
+  },
+  "model": {
+    "max_features": 30000,
+    "ngram_min": 1,
+    "ngram_max": 2,
+    "min_df": 2,
+    "lowercase": true
+  },
+  "metrics_ks": [
+    5,
+    10,
+    20
+  ],
+  "save_model": true,
+  "max_scored_dev_rows_to_save": 500
+}
