@@ -1,0 +1,92 @@
+# configs/train.yaml
+#
+# Purpose
+# -------
+# Default experiment configuration for the discovery ranking system.
+#
+# Why this file matters
+# ---------------------
+# We are moving from hardcoded Python experiment settings toward
+# config-driven experiments, which is much more realistic for a strong ML repo.
+#
+# This file is not fully wired into the training scripts yet.
+# The next step after this will be updating the training script to load
+# and use this YAML config.
+
+experiment:
+  # Friendly name for this config profile.
+  name: "two_stage_baseline"
+
+  # Global random seed used for reproducibility.
+  random_state: 42
+
+  # Ranking cutoffs we care about when evaluating.
+  metrics_ks: [5, 10, 20]
+
+  # Whether to save trained model artifacts.
+  save_models: true
+
+  # How many scored dev rows to save into CSV samples for inspection.
+  max_scored_dev_rows_to_save: 500
+
+
+retrieval:
+  # --------------------------------------------------------------------------
+  # Dataset config for fitting the first-stage retrieval baseline
+  # --------------------------------------------------------------------------
+  train_dataset:
+    split: "train"
+    max_impressions: 500
+    negatives_per_positive: 4
+    max_history_items: 5
+    random_state: 42
+
+  # --------------------------------------------------------------------------
+  # TF-IDF retrieval model config
+  # --------------------------------------------------------------------------
+  model:
+    max_features: 30000
+    ngram_min: 1
+    ngram_max: 2
+    min_df: 2
+    lowercase: true
+
+
+ranking:
+  # --------------------------------------------------------------------------
+  # Dataset config for fitting the second-stage reranker
+  # --------------------------------------------------------------------------
+  train_dataset:
+    split: "train"
+    max_impressions: 500
+    negatives_per_positive: 4
+    max_history_items: 5
+    random_state: 42
+    include_retrieval_score: true
+
+  # --------------------------------------------------------------------------
+  # Dataset config for evaluating the reranker
+  # --------------------------------------------------------------------------
+  dev_dataset:
+    split: "dev"
+    max_impressions: 120
+    negatives_per_positive: 4
+    max_history_items: 5
+    random_state: 42
+    include_retrieval_score: true
+
+  # --------------------------------------------------------------------------
+  # Logistic reranker model config
+  # --------------------------------------------------------------------------
+  model:
+    C: 1.0
+    max_iter: 1000
+    class_weight: "balanced"
+    solver: "liblinear"
+    random_state: 42
+
+
+artifacts:
+  # Optional logical labels for organizing experiment output later.
+  group: "baseline"
+  notes: "TF-IDF retrieval baseline + logistic regression reranker"

@@ -1,0 +1,5 @@
+{
+  "train_rows": 3656,
+  "dev_rows": 993,
+  "vocab_size": 8882
+}

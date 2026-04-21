@@ -4,7 +4,7 @@ scripts/train_reranker.py
 Purpose
 -------
 Command-line entry point for training and evaluating the full two-stage ranking
-pipeline:
+pipeline using a config-driven workflow.
 
 Stage 1:
 - TF-IDF retrieval baseline
@@ -14,53 +14,36 @@ Stage 2:
 
 Why this file matters
 ---------------------
-Right now, we can run the ranking trainer with:
+Previously, this script built the experiment config directly from CLI arguments.
+That worked, but now we want a more realistic ML workflow where experiments are
+driven by config files.
 
-    python3 -m src.ranking.trainer
+This version:
+- loads a YAML or JSON config
+- validates required sections
+- builds the experiment objects from config
+- supports a few CLI overrides for convenience
 
-That works, but a real ML project should also expose a top-level script that:
-- accepts experiment parameters from the command line
-- makes experiment runs easy to reproduce
-- avoids editing source code for every experiment
-- mirrors how real ML training jobs are launched
-
-What this script controls
--------------------------
-- retrieval training sample size
-- ranking train/dev sample size
-- negatives per positive
-- max user history items
-- TF-IDF vectorizer settings
-- logistic reranker settings
-- whether models should be saved
-- run name
-
-Example usage
+Default usage
 -------------
-Default experiment:
     python3 scripts/train_reranker.py
 
-Larger experiment:
+Explicit config usage
+---------------------
+    python3 scripts/train_reranker.py --config configs/train.yaml
+
+Optional run-name override
+--------------------------
     python3 scripts/train_reranker.py \
-        --run-name reranker_exp_001 \
-        --retrieval-train-max-impressions 1000 \
-        --ranking-train-max-impressions 1000 \
-        --ranking-dev-max-impressions 300 \
-        --negatives-per-positive 4 \
-        --max-history-items 8 \
-        --max-features 40000 \
-        --ngram-max 2 \
-        --logreg-c 0.5 \
-        --logreg-max-iter 1500
+        --config configs/train.yaml \
+        --run-name reranker_exp_001
 
 Notes
 -----
-This script currently trains:
-- TF-IDF retrieval baseline
-- logistic regression reranker
+YAML configs require PyYAML.
 
-Later, when we add stronger rerankers or neural retrieval models, this script can
-be extended to support multiple model types.
+Install it with:
+    python3 -m pip install pyyaml
 """
 
 from __future__ import annotations
@@ -87,6 +70,13 @@ from src.ranking.trainer import (  # noqa: E402
 )
 from src.retrieval.dataset import RetrievalDatasetConfig  # noqa: E402
 from src.retrieval.model import TfidfRetrievalConfig  # noqa: E402
+from src.utils.config import (  # noqa: E402
+    ConfigError,
+    get_value,
+    load_config,
+    require_nested_keys,
+    require_top_level_keys,
+)
 
 
 # ------------------------------------------------------------------------------
@@ -98,198 +88,244 @@ def build_parser() -> argparse.ArgumentParser:
     Build the CLI parser for the two-stage ranking experiment.
     """
     parser = argparse.ArgumentParser(
-        description="Train and evaluate the two-stage ranking pipeline."
+        description="Train and evaluate the two-stage ranking pipeline from config."
     )
 
-    # --------------------------------------------------------------------------
-    # Run metadata
-    # --------------------------------------------------------------------------
+    parser.add_argument(
+        "--config",
+        type=str,
+        default="configs/train.yaml",
+        help=(
+            "Path to the experiment config file. "
+            "Supports .yaml, .yml, and .json."
+        ),
+    )
+
     parser.add_argument(
         "--run-name",
         type=str,
         default=None,
         help=(
-            "Optional explicit run name. If omitted, a timestamp-based name is used."
-        ),
-    )
-
-    # --------------------------------------------------------------------------
-    # Retrieval training dataset
-    # --------------------------------------------------------------------------
-    parser.add_argument(
-        "--retrieval-train-max-impressions",
-        type=int,
-        default=500,
-        help=(
-            "Maximum number of train impressions used to fit the retrieval baseline."
-        ),
-    )
-
-    # --------------------------------------------------------------------------
-    # Ranking train/dev datasets
-    # --------------------------------------------------------------------------
-    parser.add_argument(
-        "--ranking-train-max-impressions",
-        type=int,
-        default=500,
-        help=(
-            "Maximum number of train impressions used to fit the reranker."
-        ),
-    )
-    parser.add_argument(
-        "--ranking-dev-max-impressions",
-        type=int,
-        default=120,
-        help=(
-            "Maximum number of dev impressions used to evaluate the reranker."
-        ),
-    )
-    parser.add_argument(
-        "--negatives-per-positive",
-        type=int,
-        default=4,
-        help=(
-            "Number of negative candidates to keep per positive candidate inside "
-            "each impression."
-        ),
-    )
-    parser.add_argument(
-        "--max-history-items",
-        type=int,
-        default=5,
-        help=(
-            "Number of most recent history articles used to build the user profile."
-        ),
-    )
-    parser.add_argument(
-        "--random-state",
-        type=int,
-        default=42,
-        help="Random seed for reproducible sampling.",
-    )
-
-    # --------------------------------------------------------------------------
-    # TF-IDF retrieval model parameters
-    # --------------------------------------------------------------------------
-    parser.add_argument(
-        "--max-features",
-        type=int,
-        default=30000,
-        help="Maximum vocabulary size for the TF-IDF vectorizer.",
-    )
-    parser.add_argument(
-        "--ngram-min",
-        type=int,
-        default=1,
-        help="Minimum n-gram size for the TF-IDF vectorizer.",
-    )
-    parser.add_argument(
-        "--ngram-max",
-        type=int,
-        default=2,
-        help="Maximum n-gram size for the TF-IDF vectorizer.",
-    )
-    parser.add_argument(
-        "--min-df",
-        type=int,
-        default=2,
-        help="Ignore terms that appear in fewer than this many documents.",
-    )
-    parser.add_argument(
-        "--no-lowercase",
-        action="store_true",
-        help="Disable lowercasing in the TF-IDF vectorizer.",
-    )
-
-    # --------------------------------------------------------------------------
-    # Logistic reranker parameters
-    # --------------------------------------------------------------------------
-    parser.add_argument(
-        "--logreg-c",
-        type=float,
-        default=1.0,
-        help=(
-            "Inverse regularization strength for logistic regression. "
-            "Smaller = stronger regularization."
-        ),
-    )
-    parser.add_argument(
-        "--logreg-max-iter",
-        type=int,
-        default=1000,
-        help="Maximum iterations for logistic regression convergence.",
-    )
-    parser.add_argument(
-        "--logreg-class-weight",
-        type=str,
-        default="balanced",
-        choices=["balanced", "none"],
-        help=(
-            "Class weighting strategy for logistic regression. "
-            "Use 'none' to disable class weighting."
-        ),
-    )
-    parser.add_argument(
-        "--logreg-solver",
-        type=str,
-        default="liblinear",
-        choices=["liblinear", "lbfgs"],
-        help="Solver for logistic regression.",
-    )
-
-    # --------------------------------------------------------------------------
-    # Output / persistence options
-    # --------------------------------------------------------------------------
-    parser.add_argument(
-        "--no-save-models",
-        action="store_true",
-        help="Do not save the fitted retrieval and reranker model artifacts.",
-    )
-    parser.add_argument(
-        "--max-scored-dev-rows-to-save",
-        type=int,
-        default=500,
-        help=(
-            "Maximum number of scored dev rows to save for later inspection."
+            "Optional explicit run name override. If omitted, the trainer will "
+            "use its default timestamp-based naming."
         ),
     )
 
     return parser
 
 
-def validate_args(args: argparse.Namespace) -> None:
-    """
-    Validate CLI arguments before launching the training run.
-    """
-    positive_int_fields = {
-        "retrieval_train_max_impressions": args.retrieval_train_max_impressions,
-        "ranking_train_max_impressions": args.ranking_train_max_impressions,
-        "ranking_dev_max_impressions": args.ranking_dev_max_impressions,
-        "negatives_per_positive": args.negatives_per_positive,
-        "max_history_items": args.max_history_items,
-        "random_state": args.random_state,
-        "max_features": args.max_features,
-        "ngram_min": args.ngram_min,
-        "ngram_max": args.ngram_max,
-        "min_df": args.min_df,
-        "logreg_max_iter": args.logreg_max_iter,
-        "max_scored_dev_rows_to_save": args.max_scored_dev_rows_to_save,
-    }
+# ------------------------------------------------------------------------------
+# Validation
+# ------------------------------------------------------------------------------
 
-    for field_name, value in positive_int_fields.items():
-        if value <= 0:
-            raise ValueError(
-                f"--{field_name.replace('_', '-')} must be > 0. Got: {value}"
+def validate_experiment_config(config: dict) -> None:
+    """
+    Validate that the config contains the required sections and keys.
+
+    We keep validation practical and focused on the fields required to build the
+    current two-stage baseline.
+    """
+    require_top_level_keys(config, ["experiment", "retrieval", "ranking"])
+
+    # experiment section
+    require_nested_keys(config, ["experiment", "random_state"])
+    require_nested_keys(config, ["experiment", "metrics_ks"])
+    require_nested_keys(config, ["experiment", "save_models"])
+    require_nested_keys(config, ["experiment", "max_scored_dev_rows_to_save"])
+
+    # retrieval section
+    require_nested_keys(config, ["retrieval", "train_dataset", "split"])
+    require_nested_keys(config, ["retrieval", "train_dataset", "max_impressions"])
+    require_nested_keys(config, ["retrieval", "train_dataset", "negatives_per_positive"])
+    require_nested_keys(config, ["retrieval", "train_dataset", "max_history_items"])
+    require_nested_keys(config, ["retrieval", "train_dataset", "random_state"])
+
+    require_nested_keys(config, ["retrieval", "model", "max_features"])
+    require_nested_keys(config, ["retrieval", "model", "ngram_min"])
+    require_nested_keys(config, ["retrieval", "model", "ngram_max"])
+    require_nested_keys(config, ["retrieval", "model", "min_df"])
+    require_nested_keys(config, ["retrieval", "model", "lowercase"])
+
+    # ranking section
+    require_nested_keys(config, ["ranking", "train_dataset", "split"])
+    require_nested_keys(config, ["ranking", "train_dataset", "max_impressions"])
+    require_nested_keys(config, ["ranking", "train_dataset", "negatives_per_positive"])
+    require_nested_keys(config, ["ranking", "train_dataset", "max_history_items"])
+    require_nested_keys(config, ["ranking", "train_dataset", "random_state"])
+    require_nested_keys(config, ["ranking", "train_dataset", "include_retrieval_score"])
+
+    require_nested_keys(config, ["ranking", "dev_dataset", "split"])
+    require_nested_keys(config, ["ranking", "dev_dataset", "max_impressions"])
+    require_nested_keys(config, ["ranking", "dev_dataset", "negatives_per_positive"])
+    require_nested_keys(config, ["ranking", "dev_dataset", "max_history_items"])
+    require_nested_keys(config, ["ranking", "dev_dataset", "random_state"])
+    require_nested_keys(config, ["ranking", "dev_dataset", "include_retrieval_score"])
+
+    require_nested_keys(config, ["ranking", "model", "C"])
+    require_nested_keys(config, ["ranking", "model", "max_iter"])
+    require_nested_keys(config, ["ranking", "model", "class_weight"])
+    require_nested_keys(config, ["ranking", "model", "solver"])
+    require_nested_keys(config, ["ranking", "model", "random_state"])
+
+    # Practical value checks
+    metrics_ks = get_value(config, ["experiment", "metrics_ks"])
+    if not isinstance(metrics_ks, list) or not metrics_ks:
+        raise ConfigError("experiment.metrics_ks must be a non-empty list of integers.")
+
+    if any((not isinstance(k, int) or k <= 0) for k in metrics_ks):
+        raise ConfigError("experiment.metrics_ks must contain only positive integers.")
+
+    for key_path in [
+        ["retrieval", "train_dataset", "max_impressions"],
+        ["retrieval", "train_dataset", "negatives_per_positive"],
+        ["retrieval", "train_dataset", "max_history_items"],
+        ["retrieval", "train_dataset", "random_state"],
+        ["retrieval", "model", "max_features"],
+        ["retrieval", "model", "ngram_min"],
+        ["retrieval", "model", "ngram_max"],
+        ["retrieval", "model", "min_df"],
+        ["ranking", "train_dataset", "max_impressions"],
+        ["ranking", "train_dataset", "negatives_per_positive"],
+        ["ranking", "train_dataset", "max_history_items"],
+        ["ranking", "train_dataset", "random_state"],
+        ["ranking", "dev_dataset", "max_impressions"],
+        ["ranking", "dev_dataset", "negatives_per_positive"],
+        ["ranking", "dev_dataset", "max_history_items"],
+        ["ranking", "dev_dataset", "random_state"],
+        ["ranking", "model", "max_iter"],
+        ["ranking", "model", "random_state"],
+        ["experiment", "max_scored_dev_rows_to_save"],
+    ]:
+        value = get_value(config, key_path)
+        if not isinstance(value, int) or value <= 0:
+            raise ConfigError(
+                f"{'.'.join(key_path)} must be a positive integer. Got: {value}"
             )
 
-    if args.ngram_min > args.ngram_max:
-        raise ValueError(
-            f"--ngram-min ({args.ngram_min}) cannot be greater than "
-            f"--ngram-max ({args.ngram_max})."
+    ngram_min = get_value(config, ["retrieval", "model", "ngram_min"])
+    ngram_max = get_value(config, ["retrieval", "model", "ngram_max"])
+    if ngram_min > ngram_max:
+        raise ConfigError(
+            "retrieval.model.ngram_min cannot be greater than retrieval.model.ngram_max."
         )
 
-    if args.logreg_c <= 0:
-        raise ValueError(f"--logreg-c must be > 0. Got: {args.logreg_c}")
+    logreg_c = get_value(config, ["ranking", "model", "C"])
+    if not isinstance(logreg_c, (int, float)) or logreg_c <= 0:
+        raise ConfigError(
+            f"ranking.model.C must be > 0. Got: {logreg_c}"
+        )
+
+    save_models = get_value(config, ["experiment", "save_models"])
+    if not isinstance(save_models, bool):
+        raise ConfigError("experiment.save_models must be a boolean.")
+
+    lowercase = get_value(config, ["retrieval", "model", "lowercase"])
+    if not isinstance(lowercase, bool):
+        raise ConfigError("retrieval.model.lowercase must be a boolean.")
+
+    for key_path in [
+        ["ranking", "train_dataset", "include_retrieval_score"],
+        ["ranking", "dev_dataset", "include_retrieval_score"],
+    ]:
+        value = get_value(config, key_path)
+        if not isinstance(value, bool):
+            raise ConfigError(f"{'.'.join(key_path)} must be a boolean.")
+
+    class_weight = get_value(config, ["ranking", "model", "class_weight"])
+    if class_weight not in {"balanced", None, "none"}:
+        raise ConfigError(
+            "ranking.model.class_weight must be one of: 'balanced', 'none', null"
+        )
+
+    solver = get_value(config, ["ranking", "model", "solver"])
+    if solver not in {"liblinear", "lbfgs"}:
+        raise ConfigError(
+            "ranking.model.solver must be one of: 'liblinear', 'lbfgs'"
+        )
+
+
+# ------------------------------------------------------------------------------
+# Config -> dataclass builders
+# ------------------------------------------------------------------------------
+
+def build_retrieval_dataset_config(config: dict) -> RetrievalDatasetConfig:
+    """
+    Build RetrievalDatasetConfig from the retrieval.train_dataset config section.
+    """
+    section = config["retrieval"]["train_dataset"]
+
+    return RetrievalDatasetConfig(
+        split=section["split"],
+        max_impressions=section["max_impressions"],
+        negatives_per_positive=section["negatives_per_positive"],
+        max_history_items=section["max_history_items"],
+        random_state=section["random_state"],
+    )
+
+
+def build_ranking_dataset_config(section: dict) -> RankingDatasetConfig:
+    """
+    Build RankingDatasetConfig from a ranking dataset config section.
+    """
+    return RankingDatasetConfig(
+        split=section["split"],
+        max_impressions=section["max_impressions"],
+        negatives_per_positive=section["negatives_per_positive"],
+        max_history_items=section["max_history_items"],
+        random_state=section["random_state"],
+        include_retrieval_score=section["include_retrieval_score"],
+    )
+
+
+def build_tfidf_config(config: dict) -> TfidfRetrievalConfig:
+    """
+    Build TfidfRetrievalConfig from the retrieval.model config section.
+    """
+    section = config["retrieval"]["model"]
+
+    return TfidfRetrievalConfig(
+        max_features=section["max_features"],
+        ngram_min=section["ngram_min"],
+        ngram_max=section["ngram_max"],
+        min_df=section["min_df"],
+        lowercase=section["lowercase"],
+    )
+
+
+def build_logistic_reranker_config(config: dict) -> LogisticRerankerConfig:
+    """
+    Build LogisticRerankerConfig from the ranking.model config section.
+    """
+    section = config["ranking"]["model"]
+
+    class_weight = section["class_weight"]
+    if class_weight == "none":
+        class_weight = None
+
+    return LogisticRerankerConfig(
+        C=section["C"],
+        max_iter=section["max_iter"],
+        class_weight=class_weight,
+        solver=section["solver"],
+        random_state=section["random_state"],
+    )
+
+
+def build_trainer_config(config: dict, run_name_override: str | None = None) -> RankingTrainerConfig:
+    """
+    Convert a validated config dictionary into RankingTrainerConfig.
+    """
+    return RankingTrainerConfig(
+        run_name=run_name_override,
+        retrieval_train_dataset=build_retrieval_dataset_config(config),
+        ranking_train_dataset=build_ranking_dataset_config(config["ranking"]["train_dataset"]),
+        ranking_dev_dataset=build_ranking_dataset_config(config["ranking"]["dev_dataset"]),
+        retrieval_model=build_tfidf_config(config),
+        reranker_model=build_logistic_reranker_config(config),
+        metrics_ks=tuple(config["experiment"]["metrics_ks"]),
+        save_models=config["experiment"]["save_models"],
+        max_scored_dev_rows_to_save=config["experiment"]["max_scored_dev_rows_to_save"],
+    )
 
 
 # ------------------------------------------------------------------------------
@@ -298,76 +334,22 @@ def validate_args(args: argparse.Namespace) -> None:
 
 def main() -> None:
     """
-    Parse arguments, build the ranking trainer config, run the experiment, and
-    print the final result summary.
+    Load config, validate it, build trainer config, run the experiment, and
+    print a final summary.
     """
     parser = build_parser()
     args = parser.parse_args()
-    validate_args(args)
 
-    class_weight = None if args.logreg_class_weight == "none" else args.logreg_class_weight
+    config = load_config(args.config, base_dir=REPO_ROOT)
+    validate_experiment_config(config)
 
-    trainer_config = RankingTrainerConfig(
-        run_name=args.run_name,
-        retrieval_train_dataset=RetrievalDatasetConfig(
-            split="train",
-            max_impressions=args.retrieval_train_max_impressions,
-            negatives_per_positive=args.negatives_per_positive,
-            max_history_items=args.max_history_items,
-            random_state=args.random_state,
-        ),
-        ranking_train_dataset=RankingDatasetConfig(
-            split="train",
-            max_impressions=args.ranking_train_max_impressions,
-            negatives_per_positive=args.negatives_per_positive,
-            max_history_items=args.max_history_items,
-            random_state=args.random_state,
-            include_retrieval_score=True,
-        ),
-        ranking_dev_dataset=RankingDatasetConfig(
-            split="dev",
-            max_impressions=args.ranking_dev_max_impressions,
-            negatives_per_positive=args.negatives_per_positive,
-            max_history_items=args.max_history_items,
-            random_state=args.random_state,
-            include_retrieval_score=True,
-        ),
-        retrieval_model=TfidfRetrievalConfig(
-            max_features=args.max_features,
-            ngram_min=args.ngram_min,
-            ngram_max=args.ngram_max,
-            min_df=args.min_df,
-            lowercase=not args.no_lowercase,
-        ),
-        reranker_model=LogisticRerankerConfig(
-            C=args.logreg_c,
-            max_iter=args.logreg_max_iter,
-            class_weight=class_weight,
-            solver=args.logreg_solver,
-            random_state=args.random_state,
-        ),
-        metrics_ks=(5, 10, 20),
-        save_models=not args.no_save_models,
-        max_scored_dev_rows_to_save=args.max_scored_dev_rows_to_save,
+    trainer_config = build_trainer_config(
+        config=config,
+        run_name_override=args.run_name,
     )
 
     print("Launching two-stage ranking experiment with config:\n")
-    print(
-        json.dumps(
-            {
-                "run_name": trainer_config.run_name,
-                "retrieval_train_dataset": trainer_config.retrieval_train_dataset.__dict__,
-                "ranking_train_dataset": trainer_config.ranking_train_dataset.__dict__,
-                "ranking_dev_dataset": trainer_config.ranking_dev_dataset.__dict__,
-                "retrieval_model": trainer_config.retrieval_model.__dict__,
-                "reranker_model": trainer_config.reranker_model.__dict__,
-                "metrics_ks": trainer_config.metrics_ks,
-                "save_models": trainer_config.save_models,
-                "max_scored_dev_rows_to_save": trainer_config.max_scored_dev_rows_to_save,
-            },
-            indent=2,
-        )
-    )
+    print(json.dumps(config, indent=2))
 
     result = train_and_evaluate_reranker(trainer_config)
 

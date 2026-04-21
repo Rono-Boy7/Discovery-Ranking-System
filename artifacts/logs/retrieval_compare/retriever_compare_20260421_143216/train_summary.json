@@ -1,0 +1,9 @@
+{
+  "rows": 3656,
+  "positives": 766,
+  "negatives": 2890,
+  "positive_rate": 0.20951859956236324,
+  "unique_impressions": 500,
+  "unique_users": 496,
+  "unique_candidates": 1436
+}
