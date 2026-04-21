@@ -412,6 +412,26 @@ Rather than pretending the neural model won, the repo shows the actual outcome.
 
 ---
 
+## How to Run [Mac Terminal Commands]:
+
+### 1. Preprocess the raw data
+
+python3 scripts/preprocess.py
+
+### 2. Train the TF-IDF retrieval baseline
+
+python3 scripts/train_retrieval.py
+
+### 3. Train the full two-stage ranking pipeline
+
+python3 scripts/train_reranker.py --config configs/train.yaml
+
+### 4. Compare TF-IDF vs Two-Tower retrieval
+
+python3 scripts/compare_retrievers.py
+
+---
+
 ## Repository Structure
 
 ```text
@@ -436,22 +456,3 @@ discovery-ranking-system/
 │   └── utils/
 ├── tests/
 └── artifacts/
-
-## How to Run [Mac Terminal Commands]:
-
-### 1. Preprocess the raw data
-
-python3 scripts/preprocess.py
-
-### 2. Train the TF-IDF retrieval baseline
-
-python3 scripts/train_retrieval.py
-
-### 3. Train the full two-stage ranking pipeline
-
-python3 scripts/train_reranker.py --config configs/train.yaml
-
-### 4. Compare TF-IDF vs Two-Tower retrieval
-
-python3 scripts/compare_retrievers.py
-
